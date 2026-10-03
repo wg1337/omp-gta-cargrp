@@ -1,0 +1,7 @@
+{
+  "user": "wg1337",
+  "repo": "omp-gta-cargrp",
+  "contributors": ["wg1337"]
+	"dependencies": [
+		"wg1337/omp-gta-vehicles-ide"
+}
