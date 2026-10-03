@@ -12,7 +12,7 @@ This is a simple include to parse GTA:SA "cargrp.dat" file. This file contains i
 
 public OnFilterScriptInit() {
     ....
-    if(!LoadCarGroups()) {
+    if(!LoadCarGrp()) {
         print("ERROR: Failed to load cargrp.dat");
         return false;
     }
@@ -24,5 +24,5 @@ public OnFilterScriptInit() {
 3) Use the provided functions, for example:
 ```
 //Get a random vehicle modelid that would a farmer drive
-new modelid = GetRandomCarGroupVehicle(GTA_CARGROUP_FARMERS);
+new modelid = GetRandomCarGrpVehicle(GTA_CARGRP_FARMERS);
 ```
