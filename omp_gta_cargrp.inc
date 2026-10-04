@@ -7,7 +7,7 @@
 
 #define GTA_CARGRP_FILE "cargrp.dat"
 
-/* In GTA:SA only 23 values are read for each cargrp.dat entry, but some entries have more than 23 cars listed. If you want more vehicles in some groups, you should increase this number */
+/* GTA:SA only uses up to 23 vehicle entries per car group. Any additional entries in cargrp.dat are ignored, the are some car groups with more entries, thanks Rockstar */
 #define GTA_CARGRP_MAX_VEHICLES (23)
 
 #define GTA_CARGRP_NAME_LENGTH (32)
@@ -22,7 +22,7 @@ enum E_GTA_CARGRP {
     GTA_CARGRP_BEACHFOLK,
     GTA_CARGRP_PARKFOLK,
     GTA_CARGRP_CASUAL_RICH, /* because of 23 limit, skipping euros, phoenix, emperor */
-    GTA_CARGRP_CASUAL_AVERAGE, /* becuase of 23 limit, skipping tahoma, picador, bmx, tornado, euros, sentinel, vcsenXS */
+    GTA_CARGRP_CASUAL_AVERAGE, /* because of 23 limit, skipping tahoma, picador, bmx, tornado, euros, sentinel, vcsenXS */
     GTA_CARGRP_CASUAL_POOR,
     GTA_CARGRP_PROSTITUTES,
     GTA_CARGRP_CRIMINALS,
@@ -113,12 +113,10 @@ static stock bool:ResolveCarGrp() {
 
     for(new group = 0; group < GTA_CARGRP_MAX_COUNT; group++) {
         for(new i = 0; i < gCarGroupVehicleCount[group]; i++) {
-            new modelId = GetVehiclesIdeModelIdByName(
-                gCarGroupNames[group][i]
-            );
+            new modelId = GetVehiclesIdeModelIdByName(gCarGroupNames[group][i]);
 
             if(modelId == -1) {
-                printf("[omp-gta-cargrp] ERROR: Unable to resolve '%s'", gCarGroupNames[group][i]);
+                printf("[omp-gta-cargrp] ERROR: Unable to resolve vehicle: group=%d index=%d name='%s'", group, i, gCarGroupNames[group][i]);
                 return false;
             }
 
@@ -139,7 +137,7 @@ static stock bool:CarGrp_ParseLine(const line[], E_GTA_CARGRP:group) {
     new commentPos = length;
 
     /*
-    * Ignore an optional comments
+    * Ignore optional comments
     */
     for(new i = 0; i < length; i++) {
         if(line[i] == '#') {
@@ -160,20 +158,22 @@ static stock bool:CarGrp_ParseLine(const line[], E_GTA_CARGRP:group) {
 
     for(new i = first; i <= commentPos; i++) {
         if(i == commentPos || line[i] == ',') {
-            new vehicleName[GTA_CARGRP_NAME_LENGTH];
-
-            if(!CarGrp_CopyTrimmedRange(line, tokenStart, i, vehicleName, sizeof(vehicleName))) {
-                printf("[omp-gta-cargrp] Empty vehicle name: group=%d", _:group);
-                return false;
-            }
-
             /*
-            * CPopulation::LoadCarGroups() loads 23 cars and ignores other
+            * CPopulation::LoadCarGroups() examines at most the first 23
+            * vehicle names in each group and ignores everything after them.
             */
             if(vehicleCount >= GTA_CARGRP_MAX_VEHICLES)
                 break;
 
+            new vehicleName[GTA_CARGRP_NAME_LENGTH];
+
+            if(!CarGrp_CopyTrimmedRange(line, tokenStart, i, vehicleName, sizeof(vehicleName))) {
+                printf("[omp-gta-cargrp] ERROR: Empty/invalid vehicle name: group=%d index=%d", _:group, vehicleCount);
+                return false;
+            }
+
             format(gCarGroupNames[_:group][vehicleCount], GTA_CARGRP_NAME_LENGTH, "%s", vehicleName);
+
             vehicleCount++;
             tokenStart = i + 1;
         }
@@ -184,15 +184,15 @@ static stock bool:CarGrp_ParseLine(const line[], E_GTA_CARGRP:group) {
 }
 
 stock bool:LoadCarGrp(const filename[] = GTA_CARGRP_FILE) {
+    gCarGroupsLoaded = false;
+    gCarGroupsResolved = false;
+
     new File:file = fopen(filename, io_read);
 
     if(!file) {
         printf("[omp-gta-cargrp] Failed to open %s", filename);
         return false;
     }
-
-    gCarGroupsLoaded = false;
-    gCarGroupsResolved = false;
 
     for(new group = 0; group < GTA_CARGRP_MAX_COUNT; group++) {
         gCarGroupVehicleCount[group] = 0;
@@ -206,17 +206,20 @@ stock bool:LoadCarGrp(const filename[] = GTA_CARGRP_FILE) {
     new line[GTA_CARGRP_MAX_LINE_LENGTH];
     new groupIndex = 0;
 
-    while(fread(file, line)) {
-        new length = strlen(line);
+    new length;
 
+    while((length = fread(file, line)) > 0) {
         while(length > 0 && (line[length - 1] == '\r' || line[length - 1] == '\n'))
             line[--length] = '\0';
 
         if(CarGrp_IsLineEmpty(line) || CarGrp_IsCommentLine(line))
             continue;
 
-        if(groupIndex >= GTA_CARGRP_MAX_COUNT)
-            break;
+        if(groupIndex >= GTA_CARGRP_MAX_COUNT) {
+            printf("[omp-gta-cargrp] ERROR: Unexpected extra car group: %s", line);
+            fclose(file);
+            return false;
+        }
 
         if(!CarGrp_ParseLine(line, E_GTA_CARGRP:groupIndex)) {
             printf("[omp-gta-cargrp] Failed to parse group %d: %s", groupIndex, line);
@@ -261,6 +264,9 @@ stock bool:IsCarGrpLoaded() {
 * Returns how many cars are there in a certain car group
 */
 stock GetCarGrpVehicleCount(E_GTA_CARGRP:group) {
+    if(!IsCarGrpLoaded())
+        return 0;
+
     if(group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT)
         return 0;
 
@@ -271,10 +277,13 @@ stock GetCarGrpVehicleCount(E_GTA_CARGRP:group) {
 * Gets the vehicle "model name" for a car group with offset
 */
 stock bool:GetCarGrpVehicleName(E_GTA_CARGRP:group, index, output[], size = sizeof(output)) {
-    if(group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT || index < 0 || index >= gCarGroupVehicleCount[_:group]) {
-        output[0] = '\0';
+    if(size <= 0)
         return false;
-    }
+
+    output[0] = '\0';
+
+    if(!IsCarGrpLoaded() || group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT || index < 0 || index >= gCarGroupVehicleCount[_:group])
+        return false;
 
     format(output, size, "%s", gCarGroupNames[_:group][index]);
     return true;
@@ -284,7 +293,7 @@ stock bool:GetCarGrpVehicleName(E_GTA_CARGRP:group, index, output[], size = size
 * Gets the vehicle modelid for a car group with offset
 */
 stock GetCarGrpVehicleModel(E_GTA_CARGRP:group, index) {
-    if(!gCarGroupsResolved || group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT || index < 0 || index >= gCarGroupVehicleCount[_:group]) {
+    if(!IsCarGrpLoaded() || group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT || index < 0 || index >= gCarGroupVehicleCount[_:group]) {
         return -1;
     }
 
@@ -292,10 +301,10 @@ stock GetCarGrpVehicleModel(E_GTA_CARGRP:group, index) {
 }
 
 /*
-* Gets a random vehicle model from a cargrp.dat group, ignores streaming funcions
+* Gets a random vehicle model from a cargrp.dat group, ignores streaming functions
 */
 stock GetRandomCarGrpVehicle(E_GTA_CARGRP:group) {
-    if(!gCarGroupsResolved || group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT) {
+    if(!IsCarGrpLoaded() || group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT) {
         return -1;
     }
 
@@ -311,7 +320,7 @@ stock GetRandomCarGrpVehicle(E_GTA_CARGRP:group) {
 * Checks if a modelid belongs to a car group
 */
 stock bool:IsVehicleInCarGrp(E_GTA_CARGRP:group, modelId) {
-    if(!gCarGroupsResolved || group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT) {
+    if(!IsCarGrpLoaded() || group < GTA_CARGRP_WORKERS || group >= E_GTA_CARGRP:GTA_CARGRP_MAX_COUNT) {
         return false;
     }
 
@@ -322,5 +331,178 @@ stock bool:IsVehicleInCarGrp(E_GTA_CARGRP:group, modelId) {
             return true;
     }
 
+    return false;
+}
+
+
+/*
+* Tests the loaded cargrp.dat data.
+* TestCarGrp();
+* TestCarGrp(GTA_CARGRP_WORKERS);
+*/
+stock bool:TestCarGrp(E_GTA_CARGRP:filterGroup = E_GTA_CARGRP:-1) {
+    if(!IsCarGrpLoaded()) {
+        printf("[omp-gta-cargrp] ERROR: cargrp.dat is not loaded/resolved.");
+        return false;
+    }
+
+    if(filterGroup != E_GTA_CARGRP:-1) {
+        if(_:filterGroup < 0 || _:filterGroup >= GTA_CARGRP_MAX_COUNT) {
+            printf("[omp-gta-cargrp] ERROR: Invalid test group: %d", _:filterGroup);
+            return false;
+        }
+    }
+
+    printf("[omp-gta-cargrp] ============================================================");
+    printf("[omp-gta-cargrp] CARGRP.DAT DATA TEST");
+
+    if(filterGroup == E_GTA_CARGRP:-1) {
+        printf("[omp-gta-cargrp] Filter: ALL");
+    } else {
+        printf("[omp-gta-cargrp] Filter: group=%d", _:filterGroup);
+    }
+
+    printf("[omp-gta-cargrp] ============================================================");
+
+    new groupsChecked = 0;
+    new vehiclesChecked = 0;
+
+    new invalidGroups = 0;
+    new invalidVehicles = 0;
+    new unresolvedVehicles = 0;
+
+    new minimumGroupSize = GTA_CARGRP_MAX_VEHICLES + 1;
+    new maximumGroupSize = 0;
+
+    for(new group = 0; group < GTA_CARGRP_MAX_COUNT; group++) {
+        if(filterGroup != E_GTA_CARGRP:-1 && group != _:filterGroup) {
+            continue;
+        }
+
+        new E_GTA_CARGRP:carGroup = E_GTA_CARGRP:group;
+        new count = GetCarGrpVehicleCount(carGroup);
+
+        new bool:groupValid = true;
+
+        printf("[omp-gta-cargrp] GROUP %d", group);
+        printf("[omp-gta-cargrp] vehicleCount      = %d", count);
+
+        if(count <= 0 || count > GTA_CARGRP_MAX_VEHICLES) {
+            printf("[omp-gta-cargrp] ERROR: Invalid vehicle count: group=%d count=%d", group, count);
+            groupValid = false;
+        } else {
+            if(count < minimumGroupSize)
+                minimumGroupSize = count;
+
+            if(count > maximumGroupSize)
+                maximumGroupSize = count;
+        }
+
+        new testCount = count;
+
+        if(testCount < 0)
+            testCount = 0;
+
+        if(testCount > GTA_CARGRP_MAX_VEHICLES)
+            testCount = GTA_CARGRP_MAX_VEHICLES;
+
+        for(new index = 0; index < testCount; index++) {
+            new vehicleName[GTA_CARGRP_NAME_LENGTH];
+
+            if(!GetCarGrpVehicleName(carGroup, index, vehicleName, sizeof(vehicleName))) {
+                printf("[omp-gta-cargrp] ERROR: GetCarGrpVehicleName() failed: group=%d index=%d", group, index);
+                invalidVehicles++;
+                groupValid = false;
+                continue;
+            }
+
+            if(vehicleName[0] == '\0') {
+                printf("[omp-gta-cargrp] ERROR: Empty vehicle name: group=%d index=%d", group, index);
+                invalidVehicles++;
+                groupValid = false;
+                continue;
+            }
+
+            new modelId = GetCarGrpVehicleModel(carGroup, index);
+
+            printf("[omp-gta-cargrp] [%02d] name='%-12s' model=%d", index, vehicleName, modelId);
+            vehiclesChecked++;
+
+            if(modelId == -1) {
+                printf("[omp-gta-cargrp] ERROR: Unresolved vehicle: group=%d index=%d name='%s'", group, index, vehicleName);
+                unresolvedVehicles++;
+                invalidVehicles++;
+                groupValid = false;
+                continue;
+            }
+
+            new resolvedModelId = GetVehiclesIdeModelIdByName(vehicleName);
+
+            if(resolvedModelId == -1) {
+                printf("[omp-gta-cargrp] ERROR: Vehicle name not found in vehicles.ide: group=%d index=%d name='%s'", group, index, vehicleName);
+                unresolvedVehicles++;
+                invalidVehicles++;
+                groupValid = false;
+                continue;
+            }
+
+            if(resolvedModelId != modelId) {
+                printf("[omp-gta-cargrp] ERROR: Name/model mismatch: group=%d index=%d name='%s' cargrp=%d vehicles.ide=%d", group, index, vehicleName, modelId, resolvedModelId);
+                invalidVehicles++;
+                groupValid = false;
+            }
+
+            if(!IsVehiclesIdeModel(modelId)) {
+                printf("[omp-gta-cargrp] ERROR: Invalid vehicles.ide model: group=%d index=%d model=%d", group, index, modelId);
+                invalidVehicles++;
+                groupValid = false;
+            }
+
+            if(!IsVehicleInCarGrp(carGroup, modelId)) {
+                printf("[omp-gta-cargrp] ERROR: IsVehicleInCarGrp() failed: group=%d index=%d model=%d", group, index, modelId);
+                invalidVehicles++;
+                groupValid = false;
+            }
+        }
+
+        printf("[omp-gta-cargrp] Result            = %s", groupValid ? "PASS" : "FAIL");
+        printf("[omp-gta-cargrp] ------------------------------------------------------------");
+
+        groupsChecked++;
+
+        if(!groupValid)
+            invalidGroups++;
+    }
+
+    if(groupsChecked == 0) {
+        printf("[omp-gta-cargrp] ERROR: No groups were selected.");
+        return false;
+    }
+
+    if(minimumGroupSize > GTA_CARGRP_MAX_VEHICLES)
+        minimumGroupSize = 0;
+
+    new expectedGroups = filterGroup == E_GTA_CARGRP:-1 ? GTA_CARGRP_MAX_COUNT : 1;
+
+    printf("[omp-gta-cargrp] ============================================================");
+    printf("[omp-gta-cargrp] VALIDATION RESULTS");
+    printf("[omp-gta-cargrp] ============================================================");
+    printf("[omp-gta-cargrp] Groups checked:              %d / %d", groupsChecked, expectedGroups);
+    printf("[omp-gta-cargrp] Vehicles checked:            %d", vehiclesChecked);
+    printf("[omp-gta-cargrp] Minimum group size:          %d", minimumGroupSize);
+    printf("[omp-gta-cargrp] Maximum group size:          %d", maximumGroupSize);
+    printf("[omp-gta-cargrp] Unresolved vehicles:         %d", unresolvedVehicles);
+    printf("[omp-gta-cargrp] Invalid vehicles:            %d", invalidVehicles);
+    printf("[omp-gta-cargrp] Invalid groups:              %d", invalidGroups);
+    printf("[omp-gta-cargrp] ============================================================");
+    if(groupsChecked == expectedGroups && invalidGroups == 0 && invalidVehicles == 0 && unresolvedVehicles == 0) {
+        printf("[omp-gta-cargrp] PASS: All %d selected groups passed validation.", groupsChecked);
+        printf("[omp-gta-cargrp] ============================================================");
+
+        return true;
+    }
+
+    printf("[omp-gta-cargrp] FAIL: cargrp.dat validation failed.");
+    printf("[omp-gta-cargrp] ============================================================");
     return false;
 }
